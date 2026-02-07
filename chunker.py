@@ -29,6 +29,13 @@ def parse_email(filepath: str) -> dict:
     sender = from_match.group(1).strip() if from_match else ""
     recipient = to_match.group(1).strip() if to_match else ""
 
+    if not subject_match:
+        logger.warning("Missing Subject header in %s", filepath)
+    if not from_match:
+        logger.warning("Missing From header in %s", filepath)
+    if not to_match:
+        logger.warning("Missing To header in %s", filepath)
+
     # Body starts after the last header (To: line), skip blank lines
     lines = text.split("\n")
     body_start = 0
@@ -69,6 +76,7 @@ def load_and_chunk(emails_dir: str) -> list[dict]:
     files = sorted(
         f for f in os.listdir(emails_dir) if f.endswith(".txt")
     )
+    logger.info("Found %d email files in %s", len(files), emails_dir)
 
     chunks = []
     for filename in files:
@@ -87,4 +95,5 @@ def load_and_chunk(emails_dir: str) -> list[dict]:
         }
         chunks.append({"chunk_text": chunk_text, "metadata": metadata})
 
+    logger.info("Successfully chunked %d / %d emails.", len(chunks), len(files))
     return chunks

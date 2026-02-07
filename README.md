@@ -42,15 +42,21 @@ The model is lazy-loaded (initialized on first use) to avoid startup cost when o
 
 ### Retrieval (`retriever.py`)
 
-**Approach**: Brute-force cosine similarity using numpy.
+**Approach**: Hybrid retrieval combining three scoring signals.
 
-For 100 documents with 384-dimensional embeddings, exact search is instant (<1ms). The vector store pre-computes document norms at initialization to avoid redundant computation during queries.
+Pure embedding similarity struggles with name/metadata queries (e.g. "emails from Helen Powell") because the model prioritizes semantic content over proper nouns. To solve this, retrieval combines three signals:
 
 ```
-similarity = (doc_embeddings @ query_embedding) / (doc_norms * query_norm)
+final_score = 0.70 × cosine_similarity + 0.15 × BM25_keyword + 0.15 × metadata_match
 ```
 
-No approximate nearest neighbor (ANN) index is needed at this scale. FAISS or Annoy would add complexity with no measurable benefit under ~10K documents.
+1. **Cosine similarity** (semantic) — embedding-based similarity for topic and meaning
+2. **BM25 keyword scoring** — TF-IDF-style token matching for exact term relevance
+3. **Metadata field matching** — direct substring and token overlap against `from`, `to`, and `subject` fields
+
+The metadata scorer gives full credit (1.0) for exact substring matches and partial credit proportional to token overlap. This ensures "emails from Helen Powell" surfaces the correct results even when the embedding model doesn't rank them highly.
+
+For 100 documents with 384-dimensional embeddings, exact search is instant (<1ms). No approximate nearest neighbor (ANN) index is needed at this scale.
 
 ### Pipeline (`rag_pipeline.py`)
 
@@ -66,8 +72,8 @@ Embeddings are cached as compressed numpy arrays (.npz) to avoid re-computing on
 |----------|----------|
 | One chunk per email | Preserves full context but limits granularity for longer documents |
 | Metadata as text prefix | Aids retrieval on sender/subject queries but slightly dilutes body semantics |
-| Brute-force cosine similarity | Simple and exact, but O(n) per query — won't scale past ~100K docs |
-| No re-ranking | Embedding similarity alone may miss nuanced relevance |
+| Hybrid scoring (cosine + BM25 + metadata) | Handles both semantic and exact-match queries, but adds scoring complexity |
+| Fixed weight split (0.70 / 0.15 / 0.15) | Semantic-heavy balance; could be tuned per query type with a classifier |
 | Single embedding model | Same model for docs and queries; asymmetric models could improve accuracy |
 
 ## Quality Evaluation Approach
@@ -94,6 +100,12 @@ python main.py --ingest
 # Interactive search
 python main.py
 
+# Single query (non-interactive)
+python main.py --query "emails from Helen Powell"
+
 # Retrieve more/fewer chunks
 python main.py --top-k 3
+
+# Combine flags
+python main.py --query "budget approval" --top-k 3
 ```

@@ -43,8 +43,13 @@ class RAGPipeline:
         Returns:
             Number of emails processed.
         """
+        if not os.path.isdir(emails_dir):
+            raise FileNotFoundError(f"Emails directory not found: {emails_dir}")
+
         logger.info("Loading emails from %s...", emails_dir)
         chunks = load_and_chunk(emails_dir)
+        if not chunks:
+            raise ValueError(f"No emails found in {emails_dir}")
         logger.info("Loaded %d emails.", len(chunks))
 
         logger.info("Generating embeddings...")
@@ -114,6 +119,10 @@ class RAGPipeline:
             raise RuntimeError(
                 "No embeddings loaded. Run ingest first or ensure cache exists."
             )
+        if not question or not question.strip():
+            raise ValueError("Query must be a non-empty string")
+        if top_k < 1:
+            raise ValueError("top_k must be at least 1")
 
         try:
             query_emb = embed_query(question)
@@ -121,4 +130,4 @@ class RAGPipeline:
             logger.exception("Failed to embed query: %s", question)
             raise
 
-        return self.vector_store.retrieve(query_emb, top_k=top_k)
+        return self.vector_store.retrieve(query_emb, query_text=question, top_k=top_k)
