@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+embeddings.npz
+chunks.json
+.DS_Store
