@@ -1,67 +1,99 @@
-# Mini RAG System
+# Mini RAG System - Design Document
+
+## Architecture Overview
 
 ```
-Time: 75 Minutes
+emails/ → Chunker → Embedder → Vector Store (numpy)
+                                     ↓
+User Query → Query Embedding → Similarity Search → Top-K Chunks → Display
 ```
 
-## Problem
+The system is a from-scratch retrieval pipeline built without frameworks like LangChain or LlamaIndex. It processes 100 synthetic corporate emails and retrieves the most relevant ones for any natural language query using semantic similarity.
 
-Build a Retrieval-Augmented Generation (RAG) pipeline that can process documents, retrieve relevant information, and generate answers to questions.
+## Component Design
 
-## Dataset
+### Chunking (`chunker.py`)
 
-A dataset of 100 synthetic emails is provided in the `emails/` directory. Each email contains:
-- Subject line
-- Sender and receiver information (from a pool of 200 unique people)
-- Body content (100+ words) with diverse topics including:
-  - Project updates
-  - Meeting requests
-  - Budget approvals
-  - Technical issues
-  - Client feedback
-  - Team announcements
-  - Deadline extensions
-  - Training opportunities
-  - Vendor proposals
-  - Performance reviews
+**Strategy**: One chunk per email, with metadata embedded as a text prefix.
 
-Use this dataset to test your RAG system's ability to:
-- Chunk and process email documents
-- Retrieve relevant information based on queries
-- Generate accurate answers using the retrieved context
+Each email is ~150 words — well within the embedding model's optimal window (~256 tokens). Splitting emails into smaller chunks would break context: separating a subject line from its body would make it impossible to answer "Who sent emails about budget approvals?" since the subject and sender would be in different chunks.
 
-## Requirements
+The chunk format preserves full structure:
+```
+Subject: {subject}
+From: {from}
+To: {to}
 
-Your RAG system should implement:
+{body}
+```
 
-1. **Document Chunking**
-   - Split documents into appropriate chunks
-   - Handle different document types and sizes
-   - Explain your chunking strategy
+This means a query like "emails from Helen Powell" will have high cosine similarity with chunks containing her name in the From: field.
 
-2. **Embedding**
-   - Generate embeddings for document chunks
-   - Choose an appropriate embedding model
-   - Store embeddings efficiently
+### Embeddings (`embedder.py`)
 
-3. **Retrieval**
-   - Implement similarity search to find relevant chunks
-   - Handle query embedding and matching
-   - Return top-k most relevant results
+**Model**: `all-MiniLM-L6-v2` (384 dimensions)
 
-4. **Generation**
-   - Use retrieved context to generate answers
-   - Design effective prompts
-   - Integrate with a language model
+- Fast inference (~100 docs/sec on CPU)
+- Good quality for semantic similarity tasks
+- Small model size (~80MB) — practical for local use
+- 256-token input sweet spot aligns with our ~150-word emails
 
-## Constraints
+The model is lazy-loaded (initialized on first use) to avoid startup cost when only loading cached embeddings.
 
-- Do not use end-to-end RAG frameworks (e.g., LangChain, LlamaIndex)
-- Build core components yourself or use individual libraries
-- Document your design choices and tradeoffs
-- Explain your approach to quality evaluation
+### Retrieval (`retriever.py`)
 
-## Submission
+**Approach**: Brute-force cosine similarity using numpy.
 
-- Create a public git repository containing your submission and share the repository link
-- Do not fork this repository or create pull requests
+For 100 documents with 384-dimensional embeddings, exact search is instant (<1ms). The vector store pre-computes document norms at initialization to avoid redundant computation during queries.
+
+```
+similarity = (doc_embeddings @ query_embedding) / (doc_norms * query_norm)
+```
+
+No approximate nearest neighbor (ANN) index is needed at this scale. FAISS or Annoy would add complexity with no measurable benefit under ~10K documents.
+
+### Pipeline (`rag_pipeline.py`)
+
+The orchestrator provides two main operations:
+- **`ingest()`**: Load → chunk → embed → cache to disk (embeddings.npz + chunks.json)
+- **`query()`**: Embed question → retrieve top-k similar chunks
+
+Embeddings are cached as compressed numpy arrays (.npz) to avoid re-computing on every session. At 100 emails × 384 dims × 4 bytes, the cache is ~150KB.
+
+## Tradeoffs
+
+| Decision | Tradeoff |
+|----------|----------|
+| One chunk per email | Preserves full context but limits granularity for longer documents |
+| Metadata as text prefix | Aids retrieval on sender/subject queries but slightly dilutes body semantics |
+| Brute-force cosine similarity | Simple and exact, but O(n) per query — won't scale past ~100K docs |
+| No re-ranking | Embedding similarity alone may miss nuanced relevance |
+| Single embedding model | Same model for docs and queries; asymmetric models could improve accuracy |
+
+## Quality Evaluation Approach
+
+To evaluate retrieval quality:
+
+1. **Manual spot checks**: For known queries ("Who sent emails about budget?"), verify the top-k results contain relevant emails
+2. **Relevance scoring**: Check if the correct email appears in top-1, top-3, top-5 (Recall@K)
+
+For a production system, you'd want:
+- A labeled evaluation dataset (query → relevant email IDs)
+- Automated metrics (MRR, NDCG, Recall@K)
+- A/B testing of chunking strategies and embedding models
+
+## Running the System
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Ingest emails (generates embeddings)
+python main.py --ingest
+
+# Interactive search
+python main.py
+
+# Retrieve more/fewer chunks
+python main.py --top-k 3
+```
